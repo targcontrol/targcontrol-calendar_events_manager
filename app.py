@@ -15,6 +15,37 @@ URL_CALENDAR_TYPES = f'https://{DOMAIN}.targcontrol.com/external/api/employee-sc
 URL_EMPLOYEES = f'https://{DOMAIN}.targcontrol.com/external/api/employees/query'
 URL_CREATE_SCHEDULE = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/create'
 
+# Streamlit app configuration
+st.set_page_config(page_title="Calendar Event Uploader", layout="wide")
+st.title("TargControl: Создание календарных событий")
+
+# Instruction for CSV file
+with st.expander("Инструкция по созданию CSV-файла", expanded=False):
+    st.markdown("""
+    ### Пример структуры CSV-файла
+    Для корректной обработки файл должен быть в формате CSV с разделителем `;` и содержать следующие столбцы:
+    - **Фамилия**: Фамилия сотрудника (обязательно, должно совпадать с данными в TargControl).
+    - **Имя**: Имя сотрудника (необязательно, если отсутствует, используется только фамилия).
+    - **Отчество**: Отчество сотрудника (необязательно, игнорируется).
+    - **Тип**: Тип календарного события (например, "Отпуск"). Должен точно совпадать с типом события в TargControl.
+    - **Дата1**: Дата начала события в формате `DD/MM/YY` (например, `14/08/25`).
+    - **Дата2**: Дата окончания события в формате `DD/MM/YY` (например, `30/08/25`).
+
+    **Пример таблицы**:
+
+    | Фамилия       | Имя         | Отчество         | Тип     | Дата1    | Дата2    |
+    |---------------|-------------|------------------|---------|----------|----------|
+    | Иванов      | Александр   | Константинович   | Отпуск  | 14/08/25 | 30/08/25 |
+    | Петрова       | Виктория    | Вячеславовна     | Отпуск  | 30/06/25 | 13/07/25 |
+    | Сидорова   | Ирина       | Анатольевна      | Отпуск  | 01/07/25 | 14/07/25 |
+    | Погребович     | Екатерина   | Александровна    | Отпуск  | 02/06/25 | 16/06/25 |
+
+    **Убедитесь, что**:
+    - Столбцы `Фамилия`, `Тип`, `Дата1`, `Дата2` присутствуют и заполнены.
+    - Значения в столбце `Тип` точно совпадают с типами событий из TargControl.
+    - Даты указаны в формате `DD/MM/YY`.
+    - Фамилия (и имя, если указано) совпадают с данными сотрудников в TargControl.
+    """)
 
 def get_headers(api_key):
     """Возвращает заголовки с указанным API-ключом"""
@@ -24,8 +55,6 @@ def get_headers(api_key):
         'Content-Type': 'application/json',
     }
 
-
-# Функция для загрузки типов событий
 def load_calendar_types(api_key):
     """Загружает типы календарных событий"""
     try:
@@ -40,8 +69,6 @@ def load_calendar_types(api_key):
         st.error(f"Не удалось загрузить типы событий: {e}")
         return {}
 
-
-# Функция для загрузки сотрудников
 def get_employees(api_key):
     """Загружает список сотрудников"""
     try:
@@ -70,7 +97,6 @@ def get_employees(api_key):
         st.error(f"Не удалось загрузить сотрудников: {e}")
         return {}
 
-
 def parse_date(date_str, timezone):
     """Конвертирует строку даты в ISO-формат в UTC"""
     if not date_str.strip():
@@ -84,7 +110,6 @@ def parse_date(date_str, timezone):
     except ValueError as e:
         st.warning(f"Неверный формат даты для '{date_str}': {e}")
         return None
-
 
 def create_schedule(api_key, employee_id, calendar_type_id, start_date, end_date):
     """Создает календарное событие"""
@@ -109,9 +134,7 @@ def create_schedule(api_key, employee_id, calendar_type_id, start_date, end_date
     except Exception as e:
         return False, f"Не удалось создать событие для {employee_id}: {e}"
 
-
 def main():
-    st.title("TargControl: Создание календарных событий")
     st.write("Введите API-токен, выберите таймзону и загрузите CSV-файл для создания событий.")
 
     # Ввод API-токена
@@ -210,7 +233,6 @@ def main():
                 st.error(result)
             else:
                 st.success(result)
-
 
 if __name__ == "__main__":
     main()
