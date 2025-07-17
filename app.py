@@ -8,7 +8,7 @@ import pytz
 from io import StringIO
 
 # Конфигурация
-DOMAIN = 'cloud'
+DOMAIN = 'dev'
 
 # URL-адреса API
 URL_CALENDAR_TYPES = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/types'
@@ -26,25 +26,30 @@ with st.expander("Инструкция по созданию CSV-файла", ex
     Для корректной обработки файл должен быть в формате CSV с разделителем `;` и содержать следующие столбцы:
     - **Фамилия**: Фамилия сотрудника (обязательно, должно совпадать с данными в TargControl).
     - **Имя**: Имя сотрудника (необязательно, если отсутствует, используется только фамилия).
-    - **Отчество**: Отчество сотрудника (необязательно, игнорируется).
+    - **Отчество**: Отчество сотрудника (необязательно, используется только при полном совпадении ФИО).
     - **Тип**: Тип календарного события (например, "Отпуск"). Должен точно совпадать с типом события в TargControl.
-    - **Дата1**: Дата начала события в формате `DD/MM/YY` (например, `14/08/25`).
-    - **Дата2**: Дата окончания события в формате `DD/MM/YY` (например, `30/08/25`).
+    - **Дата1**: Дата начала события в формате `DD/MM/YY` (например, `14/08/25`), интерпретируется как начало дня (00:00:00).
+    - **Дата2**: Дата окончания события в формате `DD/MM/YY` (например, `30/08/25`), интерпретируется как конец указанного дня (23:59:59), чтобы охватить весь день.
 
     **Пример таблицы**:
 
-    | Фамилия       | Имя         | Отчество         | Тип     | Дата1    | Дата2    |
-    |---------------|-------------|------------------|---------|----------|----------|
+    | Фамилия     | Имя         | Отчество         | Тип     | Дата1    | Дата2    |
+    |-------------|-------------|------------------|---------|----------|----------|
     | Иванов      | Александр   | Константинович   | Отпуск  | 14/08/25 | 30/08/25 |
-    | Петрова       | Виктория    | Вячеславовна     | Отпуск  | 30/06/25 | 13/07/25 |
-    | Сидорова   | Ирина       | Анатольевна      | Отпуск  | 01/07/25 | 14/07/25 |
-    | Погребович     | Екатерина   | Александровна    | Отпуск  | 02/06/25 | 16/06/25 |
+    | Петрова     | Виктория    |                  | Отпуск  | 30/06/25 | 13/07/25 |
+    | Сидорова    |             |                  | Отпуск  | 01/07/25 | 14/07/25 |
+    | Погребович  | Екатерина   | Александровна    | Отпуск  | 02/06/25 | 16/06/25 |
 
     **Убедитесь, что**:
     - Столбцы `Фамилия`, `Тип`, `Дата1`, `Дата2` присутствуют и заполнены.
     - Значения в столбце `Тип` точно совпадают с типами событий из TargControl.
     - Даты указаны в формате `DD/MM/YY`.
-    - Фамилия (и имя, если указано) совпадают с данными сотрудников в TargControl.
+    - `Дата2` интерпретируется как конец указанного дня в 23:59:59 (например, `30/08/25` → `30/08/25 23:59:59`).
+    - **Поиск сотрудников**:
+      - Если указаны `Фамилия`, `Имя`, `Отчество`, ищется точное совпадение полного ФИО.
+      - Если указаны `Фамилия` и `Имя`, ищется совпадение по фамилии и имени (без отчества).
+      - Если указана только `Фамилия`, ищется сотрудник с этой фамилией без имени и отчества.
+    - Данные сотрудников (ФИО) должны точно совпадать с данными в TargControl.
     """)
 
 def get_headers(api_key):
@@ -77,18 +82,27 @@ def get_employees(api_key):
             employees = response.json()
             employee_dict = {}
             for emp in employees:
-                # Безопасно получаем lastName и firstName, заменяя None на пустую строку
+                # Безопасно получаем lastName, firstName, middleName, заменяя None на пустую строку
                 last_name = (emp['name'].get('lastName') or '').strip()
                 first_name = (emp['name'].get('firstName') or '').strip()
+                middle_name = (emp['name'].get('middleName') or '').strip()
 
-                # Пропускаем сотрудников, у которых оба поля пустые
-                if not last_name and not first_name:
-                    st.warning(f"Пропущен сотрудник с ID {emp.get('id', 'неизвестно')}: отсутствуют имя и фамилия")
+                # Пропускаем сотрудников, у которых lastName пустое
+                if not last_name:
+                    st.warning(f"Пропущен сотрудник с ID {emp.get('id', 'неизвестно')}: отсутствует фамилия")
                     continue
 
-                # Формируем ключ: только фамилия, если имя пустое, или фамилия + имя
-                full_name = last_name if not first_name else f"{last_name} {first_name}"
-                employee_dict[full_name] = emp['id']
+                # Формируем ключи для поиска
+                if middle_name:
+                    # Полное ФИО: lastName firstName middleName
+                    employee_dict[f"{last_name} {first_name} {middle_name}"] = emp['id']
+                if first_name:
+                    # Фамилия + Имя
+                    employee_dict[f"{last_name} {first_name}"] = emp['id']
+                if not first_name and not middle_name:
+                    # Только фамилия
+                    employee_dict[last_name] = emp['id']
+
             return employee_dict
         else:
             st.error(f"Ошибка загрузки сотрудников: {response.status_code} — {response.text}")
@@ -97,13 +111,16 @@ def get_employees(api_key):
         st.error(f"Не удалось загрузить сотрудников: {e}")
         return {}
 
-def parse_date(date_str, timezone):
+def parse_date(date_str, timezone, is_end_date=False):
     """Конвертирует строку даты в ISO-формат в UTC"""
     if not date_str.strip():
         return None
     try:
         dt = datetime.strptime(date_str, "%d/%m/%y")
         tz = pytz.timezone(timezone)
+        if is_end_date:
+            # Для конечной даты устанавливаем 23:59:59
+            dt = dt.replace(hour=23, minute=59, second=59)
         dt_local = tz.localize(dt)
         dt_utc = dt_local.astimezone(pytz.UTC)
         return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -192,23 +209,29 @@ def main():
 
         for row in reader:
             surname = row['Фамилия'].strip()
-            name = row['Имя'].strip()
+            name = row.get('Имя', '').strip()
+            middle_name = row.get('Отчество', '').strip()
             event_type_name = row['Тип'].strip()
 
             # Пропуск строк без типа события
             if not event_type_name:
-                results.append(f"⚠️ Пропущено: Нет типа события для {surname} {name}")
+                results.append(f"⚠️ Пропущено: Нет типа события для {surname} {name} {middle_name}".strip())
                 continue
 
             # Парсинг дат
-            start_date = parse_date(row['Дата1'], timezone)
-            end_date = parse_date(row['Дата2'], timezone)
+            start_date = parse_date(row['Дата1'], timezone, is_end_date=False)
+            end_date = parse_date(row['Дата2'], timezone, is_end_date=True)
             if not start_date or not end_date:
-                results.append(f"⚠️ Пропущено: Неверные или отсутствующие даты для {surname} {name}")
+                results.append(f"⚠️ Пропущено: Неверные или отсутствующие даты для {surname} {name} {middle_name}".strip())
                 continue
 
-            # Формируем полное имя: только фамилия, если имя пустое
-            full_name = surname if not name else f"{surname} {name}"
+            # Формируем ключ для поиска сотрудника
+            if middle_name:
+                full_name = f"{surname} {name} {middle_name}"
+            elif name:
+                full_name = f"{surname} {name}"
+            else:
+                full_name = surname
 
             # Поиск ID сотрудника
             employee_id = employees.get(full_name)
