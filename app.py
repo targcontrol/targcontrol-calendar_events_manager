@@ -8,7 +8,7 @@ import pytz
 from io import StringIO
 
 # Конфигурация
-DOMAIN = 'staging'
+DOMAIN = 'cloud'
 
 # URL-адреса API
 URL_CALENDAR_TYPES = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/types'
