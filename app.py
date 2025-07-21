@@ -146,6 +146,9 @@ def create_schedule(api_key, employee_id, calendar_type_id, start_date, end_date
         if response.status_code in [200, 201]:
             return True, f"Событие создано для сотрудника ID: {employee_id}"
         else:
+            # Проверка на ошибку уволенного сотрудника
+            if response.status_code == 400 and "Employee" in response.text and "is fired" in response.text:
+                return False, f"⚠️ Пропущено: Сотрудник с ID {employee_id} уволен"
             return False, f"Ошибка создания события для {employee_id}: {response.status_code} — {response.text}"
     except Exception as e:
         return False, f"Не удалось создать событие для {employee_id}: {e}"
