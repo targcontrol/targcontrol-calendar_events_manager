@@ -261,13 +261,26 @@ def main():
             if uploaded_file is None:
                 st.error("Пожалуйста, загрузите CSV-файл.")
             else:
-                # Показ предварительного просмотра CSV
+                # Попытка чтения CSV с разными разделителями
                 try:
+                    # Сначала пробуем разделитель ';'
+                    uploaded_file.seek(0)
                     df = pd.read_csv(uploaded_file, delimiter=';', encoding='utf-8')
+                    # Проверяем, что все обязательные столбцы присутствуют
+                    required_columns = ['Фамилия', 'Тип', 'Дата1', 'Дата2']
+                    if not all(col in df.columns for col in required_columns):
+                        # Пробуем разделитель ','
+                        uploaded_file.seek(0)
+                        df = pd.read_csv(uploaded_file, delimiter=',', encoding='utf-8')
+                        if not all(col in df.columns for col in required_columns):
+                            st.error(
+                                "Ошибка: CSV-файл не содержит всех обязательных столбцов: 'Фамилия', 'Тип', 'Дата1', 'Дата2'.")
+                            return
                     st.write("Предпросмотр загруженного CSV:")
                     st.dataframe(df)
                 except Exception as e:
-                    st.error(f"Ошибка чтения CSV: {e}")
+                    st.error(
+                        f"Ошибка чтения CSV-файла. Убедитесь, что файл использует разделитель ';' или ',' и содержит корректные данные. Детали ошибки: {e}")
                     return
 
                 # Загрузка типов событий и сотрудников
@@ -285,7 +298,22 @@ def main():
                 results = []
                 uploaded_file.seek(0)
                 csv_text = StringIO(uploaded_file.getvalue().decode('utf-8'))
-                reader = csv.DictReader(csv_text, delimiter=';')
+                # Определяем разделитель для DictReader
+                try:
+                    csv_text.seek(0)
+                    reader = csv.DictReader(csv_text, delimiter=';')
+                    # Проверяем, что обязательные поля присутствуют
+                    if not all(col in reader.fieldnames for col in required_columns):
+                        csv_text.seek(0)
+                        reader = csv.DictReader(csv_text, delimiter=',')
+                        if not all(col in reader.fieldnames for col in required_columns):
+                            st.error(
+                                "Ошибка: CSV-файл не содержит всех обязательных столбцов: 'Фамилия', 'Тип', 'Дата1', 'Дата2'.")
+                            return
+                except Exception as e:
+                    st.error(
+                        f"Ошибка обработки CSV: {e}. Убедитесь, что файл использует разделитель ';' или ',' и содержит корректные данные.")
+                    return
 
                 for row in reader:
                     surname = row['Фамилия'].strip()
@@ -300,7 +328,8 @@ def main():
                     start_date = parse_date(row['Дата1'], timezone, is_end_date=False)
                     end_date = parse_date(row['Дата2'], timezone, is_end_date=True)
                     if not start_date or not end_date:
-                        results.append(f"⚠️ Пропущено: Неверные или отсутствующие даты для {surname} {name} {middle_name}".strip())
+                        results.append(
+                            f"⚠️ Пропущено: Неверные или отсутствующие даты для {surname} {name} {middle_name}".strip())
                         continue
 
                     if middle_name:
@@ -323,7 +352,8 @@ def main():
                         results.append(f"⚠️ Пропущено: Тип события '{event_type_name}' не найден")
                         continue
 
-                    success, message = create_schedule(api_key, employee_id, employee_name, event_type_id, start_date, end_date)
+                    success, message = create_schedule(api_key, employee_id, employee_name, event_type_id, start_date,
+                                                       end_date)
                     results.append(message)
 
                 st.subheader("Результаты обработки")
