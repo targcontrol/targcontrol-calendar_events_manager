@@ -6,6 +6,58 @@ from datetime import datetime, time
 import uuid
 import pytz
 from io import StringIO
+import streamlit as st
+import base64
+
+# Загружаем логотип
+logo_path = "logo.png"
+with open(logo_path, "rb") as f:
+    logo_base64 = base64.b64encode(f.read()).decode()
+
+# Кастомный хедер
+st.markdown(f"""
+    <style>
+    /* Убираем кнопку Deploy и меню Streamlit */
+    #MainMenu {{visibility: hidden;}}
+    header [data-testid="stToolbar"] {{display: none !important;}}
+
+    /* Кастомный хедер */
+    .custom-header {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background-color: white;
+        border-bottom: 1px solid #ddd;
+        padding: 8px 20px;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        z-index: 1000;
+    }}
+    .custom-header img {{
+        height: 28px;
+    }}
+    .back-button {{
+        background-color: black;
+        color: white;
+        border: none;
+        font-size: 16px;
+        padding: 6px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+    }}
+    .back-button:hover {{
+        background-color: #333;
+    }}
+    </style>
+    <div class="custom-header">
+        <div>
+            <img src="data:image/png;base64,{logo_base64}" alt="TARGControl Logo">
+        </div>
+    </div>
+    <div style="margin-top: 60px;"></div> <!-- отступ под хедер -->
+""", unsafe_allow_html=True)
 
 # Конфигурация
 DOMAIN = 'cloud'
