@@ -5,23 +5,45 @@ import pandas as pd
 from datetime import datetime, time
 import uuid
 import pytz
-from io import StringIO
-import streamlit as st
+from io import StringIO, BytesIO
 import base64
 
-# Загружаем логотип
-logo_path = "logo.png"
-with open(logo_path, "rb") as f:
-    logo_base64 = base64.b64encode(f.read()).decode()
+# =========================
+# Helpers for CSV handling
+# =========================
+def _decode_uploaded_bytes(file_bytes):
+    """Try utf-8-sig, then utf-8, then latin-1. Return (text, encoding)."""
+    for enc in ("utf-8-sig", "utf-8"):
+        try:
+            return file_bytes.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    return file_bytes.decode("latin-1"), "latin-1"
 
-# Кастомный хедер
+def _normalize_fields(fields):
+    """Strip BOM and whitespace from header names."""
+    return [(f or "").strip().lstrip("\ufeff") for f in fields]
+
+def _normalize_row(row):
+    """Strip BOM and whitespace from DictReader row keys; ensure values are strings."""
+    return { (k or "").strip().lstrip("\ufeff"): (v or "") for k, v in row.items() }
+
+# =========================
+# UI: Logo / Header
+# =========================
+logo_path = "logo.png"
+try:
+    with open(logo_path, "rb") as f:
+        logo_base64 = base64.b64encode(f.read()).decode()
+except Exception:
+    logo_base64 = ""
+
+st.set_page_config(page_title="Calendar Event Uploader", layout="wide")
+
 st.markdown(f"""
     <style>
-    /* Убираем кнопку Deploy и меню Streamlit */
     #MainMenu {{visibility: hidden;}}
     header [data-testid="stToolbar"] {{display: none !important;}}
-
-    /* Кастомный хедер */
     .custom-header {{
         display: flex;
         align-items: center;
@@ -35,9 +57,7 @@ st.markdown(f"""
         width: 100%;
         z-index: 1000;
     }}
-    .custom-header img {{
-        height: 28px;
-    }}
+    .custom-header img {{ height: 28px; }}
     .back-button {{
         background-color: black;
         color: white;
@@ -47,67 +67,57 @@ st.markdown(f"""
         border-radius: 6px;
         cursor: pointer;
     }}
-    .back-button:hover {{
-        background-color: #333;
-    }}
+    .back-button:hover {{ background-color: #333; }}
     </style>
     <div class="custom-header">
         <div>
             <img src="data:image/png;base64,{logo_base64}" alt="TARGControl Logo">
         </div>
     </div>
-    <div style="margin-top: 60px;"></div> <!-- отступ под хедер -->
+    <div style="margin-top: 60px;"></div>
 """, unsafe_allow_html=True)
 
-# Конфигурация
-DOMAIN = 'cloud'
-
-# URL-адреса API
-URL_CALENDAR_TYPES = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/types'
-URL_EMPLOYEES = f'https://{DOMAIN}.targcontrol.com/external/api/employees/query'
-URL_CREATE_SCHEDULE = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/create'
-URL_LOCATIONS = f'https://{DOMAIN}.targcontrol.com/external/api/locations'
-URL_CALENDAR_EVENTS = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/query'
-URL_DELETE_EVENT = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/delete/{{calendarEventId}}'
-
-# Streamlit app configuration
-st.set_page_config(page_title="Calendar Event Uploader", layout="wide")
 st.title("TargControl: Управление календарными событиями")
 
-# Instruction for CSV file
+# =========================
+# Config / API Endpoints
+# =========================
+DOMAIN = 'cloud'
+
+URL_CALENDAR_TYPES = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/types'
+URL_EMPLOYEES      = f'https://{DOMAIN}.targcontrol.com/external/api/employees/query'
+URL_CREATE_SCHEDULE= f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/create'
+URL_LOCATIONS      = f'https://{DOMAIN}.targcontrol.com/external/api/locations'
+URL_CALENDAR_EVENTS= f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/query'
+URL_DELETE_EVENT   = f'https://{DOMAIN}.targcontrol.com/external/api/employee-schedules/calendar/delete/{{calendarEventId}}'
+
+# =========================
+# Instructions
+# =========================
 with st.expander("Инструкция по созданию CSV-файла", expanded=False):
     st.markdown("""
     ### Пример структуры CSV-файла
-    Для корректной обработки файл должен быть в формате CSV с разделителем `;` и содержать следующие столбцы:
-    - **Фамилия**: Фамилия сотрудника (обязательно, должно совпадать с данными в TargControl).
-    - **Имя**: Имя сотрудника (необязательно, если отсутствует, используется только фамилия).
-    - **Отчество**: Отчество сотрудника (необязательно, используется только при полном совпадении ФИО).
-    - **Тип**: Тип календарного события (например, "Отпуск"). Должен точно совпадать с типом события в TargControl.
-    - **Дата1**: Дата начала события в формате `DD/MM/YY` (например, `14/08/25`), интерпретируется как начало дня (00:00:00).
-    - **Дата2**: Дата окончания события в формате `DD/MM/YY` (например, `30/08/25`).
+    Формат CSV с разделителем `;`. Столбцы:
+    - **Фамилия** (обязательно)
+    - **Имя** (опционально)
+    - **Отчество** (опционально)
+    - **Тип** (обязательно; должен совпадать с типом события в TargControl)
+    - **Дата1** (обязательно; DD/MM/YY)
+    - **Дата2** (обязательно; DD/MM/YY)
 
-    **Пример таблицы**:
-
-    | Фамилия     | Имя         | Отчество         | Тип     | Дата1    | Дата2    |
-    |-------------|-------------|------------------|---------|----------|----------|
-    | Иванов      | Александр   | Константинович   | Отпуск  | 14/08/25 | 30/08/25 |
-    | Петрова     | Виктория    |                  | Отпуск  | 30/06/25 | 13/07/25 |
-    | Сидорова    |             |                  | Отпуск  | 01/07/25 | 14/07/25 |
-    | Погребович  | Екатерина   | Александровна    | Отпуск  | 02/06/25 | 16/06/25 |
-
-    **Убедитесь, что**:
-    - Столбцы `Фамилия`, `Тип`, `Дата1`, `Дата2` присутствуют и заполнены.
-    - Значения в столбце `Тип` точно совпадают с типами событий из TargControl.
-    - Даты указаны в формате `DD/MM/YY`.
-    - **Поиск сотрудников**:
-      - Если указаны `Фамилия`, `Имя`, `Отчество`, ищется точное совпадение полного ФИО.
-      - Если указаны `Фамилия` и `Имя`, ищется совпадение по фамилии и имени (без отчества).
-      - Если указана только `Фамилия`, ищется сотрудник с этой фамилией без имени и отчества.
-    - Данные сотрудников (ФИО) должны точно совпадать с данными в TargControl.
+    **Пример:**
+    | Фамилия   | Имя       | Отчество       | Тип               | Дата1     | Дата2     |
+    |-----------|-----------|----------------|-------------------|-----------|-----------|
+    | Иванов    | Александр | Константинович | Отпуск            | 14/08/25  | 30/08/25  |
+    | Петрова   | Виктория  |                | Отпуск            | 30/06/25  | 13/07/25  |
+    | Сидорова  |           |                | Отпуск            | 01/07/25  | 14/07/25  |
+    | Погребович| Екатерина | Александровна  | Отпуск            | 02/06/25  | 16/06/25  |
     """)
 
+# =========================
+# API helpers
+# =========================
 def get_headers(api_key):
-    """Возвращает заголовки с указанным API-ключом"""
     return {
         'accept': 'application/json',
         'X-API-Key': api_key,
@@ -115,108 +125,90 @@ def get_headers(api_key):
     }
 
 def load_calendar_types(api_key):
-    """Загружает типы календарных событий"""
     try:
-        response = requests.get(URL_CALENDAR_TYPES, headers=get_headers(api_key))
-        if response.status_code == 200:
-            types = response.json()
+        r = requests.get(URL_CALENDAR_TYPES, headers=get_headers(api_key))
+        if r.status_code == 200:
+            types = r.json()
             return {item['name']: item['id'] for item in types}
         else:
-            st.error(f"Ошибка загрузки типов событий: {response.status_code} — {response.text}")
+            st.error(f"Ошибка загрузки типов событий: {r.status_code} — {r.text}")
             return {}
     except Exception as e:
         st.error(f"Не удалось загрузить типы событий: {e}")
         return {}
 
 def get_locations(api_key):
-    """Получает список локаций"""
     try:
-        response = requests.get(URL_LOCATIONS, headers=get_headers(api_key))
-        if response.status_code == 200:
-            locations = response.json().get('data', [])
+        r = requests.get(URL_LOCATIONS, headers=get_headers(api_key))
+        if r.status_code == 200:
+            locations = r.json().get('data', [])
             return {loc['name']: loc['id'] for loc in locations}
         else:
-            st.error(f"Ошибка загрузки локаций: {response.status_code} — {response.text}")
+            st.error(f"Ошибка загрузки локаций: {r.status_code} — {r.text}")
             return {}
     except Exception as e:
         st.error(f"Не удалось загрузить локации: {e}")
         return {}
 
 def get_employees_by_location(api_key, location_id):
-    """Получает сотрудников, отфильтрованных по локации"""
     try:
-        response = requests.get(URL_EMPLOYEES, headers=get_headers(api_key))
-        if response.status_code == 200:
-            employees = response.json()
-            filtered_employees = [
-                emp['id'] for emp in employees
-                if location_id in emp.get('locationIds', [])
-            ]
-            st.info(f"Найдено {len(filtered_employees)} сотрудников в выбранной локации")
-            return filtered_employees
+        r = requests.get(URL_EMPLOYEES, headers=get_headers(api_key))
+        if r.status_code == 200:
+            employees = r.json()
+            filtered = [emp['id'] for emp in employees if location_id in emp.get('locationIds', [])]
+            st.info(f"Найдено {len(filtered)} сотрудников в выбранной локации")
+            return filtered
         else:
-            st.error(f"Ошибка при получении сотрудников: {response.status_code} — {response.text}")
+            st.error(f"Ошибка при получении сотрудников: {r.status_code} — {r.text}")
             return []
     except Exception as e:
         st.error(f"Не удалось получить сотрудников: {e}")
         return []
 
 def get_calendar_events(api_key, employee_ids, start, end):
-    """Получает календарные события для указанных сотрудников в заданном диапазоне дат"""
     if not employee_ids:
         st.info("Нет сотрудников для получения календарных событий")
         return []
-
-    payload = {
-        "range": {
-            "since": start,
-            "upTo": end
-        },
-        "employeeIds": employee_ids
-    }
-
+    payload = {"range": {"since": start, "upTo": end}, "employeeIds": employee_ids}
     try:
-        response = requests.post(URL_CALENDAR_EVENTS, headers=get_headers(api_key), json=payload)
-        if response.status_code == 200:
-            events = response.json()
+        r = requests.post(URL_CALENDAR_EVENTS, headers=get_headers(api_key), json=payload)
+        if r.status_code == 200:
+            events = r.json()
             st.info(f"Получено {len(events)} календарных событий")
             return events
         else:
-            st.error(f"Ошибка при получении календарных событий: {response.status_code} — {response.text}")
+            st.error(f"Ошибка при получении календарных событий: {r.status_code} — {r.text}")
             return []
     except Exception as e:
         st.error(f"Не удалось получить календарные события: {e}")
         return []
 
 def delete_calendar_event(api_key, event_id):
-    """Удаляет календарное событие по его ID"""
     url = URL_DELETE_EVENT.format(calendarEventId=event_id)
     try:
-        response = requests.delete(url, headers=get_headers(api_key))
-        if response.status_code in [200, 204]:
+        r = requests.delete(url, headers=get_headers(api_key))
+        if r.status_code in [200, 204]:
             return True, f"Успешно удалено календарное событие {event_id}"
         else:
-            return False, f"Ошибка при удалении календарного события {event_id}: {response.status_code} — {response.text}"
+            return False, f"Ошибка при удалении календарного события {event_id}: {r.status_code} — {r.text}"
     except Exception as e:
         return False, f"Не удалось удалить событие {event_id}: {e}"
 
 def get_employees(api_key):
-    """Загружает список сотрудников"""
     try:
-        response = requests.get(URL_EMPLOYEES, headers=get_headers(api_key))
-        if response.status_code == 200:
-            employees = response.json()
+        r = requests.get(URL_EMPLOYEES, headers=get_headers(api_key))
+        if r.status_code == 200:
+            employees = r.json()
             employee_dict = {}
             for emp in employees:
-                last_name = (emp['name'].get('lastName') or '').strip()
+                last_name  = (emp['name'].get('lastName')  or '').strip()
                 first_name = (emp['name'].get('firstName') or '').strip()
-                middle_name = (emp['name'].get('middleName') or '').strip()
+                middle_name= (emp['name'].get('middleName')or '').strip()
 
                 if not last_name:
-                    st.warning(f"Пропущен сотрудник с ID {emp.get('id', 'неизвестно')}: отсутствует фамилия")
+                    st.warning(f"Пропущен сотрудник с ID {emp.get('id','неизвестно')}: отсутствует фамилия")
                     continue
 
-                # Формируем полное имя
                 full_name = f"{last_name} {first_name} {middle_name}".strip()
                 if not first_name and not middle_name:
                     full_name = last_name
@@ -229,33 +221,38 @@ def get_employees(api_key):
                     employee_dict[f"{last_name} {first_name}"] = {'id': emp['id'], 'name': full_name}
                 if not first_name and not middle_name:
                     employee_dict[last_name] = {'id': emp['id'], 'name': full_name}
-
             return employee_dict
         else:
-            st.error(f"Ошибка загрузки сотрудников: {response.status_code} — {response.text}")
+            st.error(f"Ошибка загрузки сотрудников: {r.status_code} — {r.text}")
             return {}
     except Exception as e:
         st.error(f"Не удалось загрузить сотрудников: {e}")
         return {}
 
 def parse_date(date_str, timezone, is_end_date=False):
-    """Конвертирует строку даты в ISO-формат в UTC"""
-    if not date_str.strip():
+    if not str(date_str).strip():
         return None
-    try:
-        dt = datetime.strptime(date_str, "%d/%m/%y")
-        tz = pytz.timezone(timezone)
-        if is_end_date:
-            dt = dt.replace(hour=23, minute=59, second=59)
-        dt_local = tz.localize(dt)
-        dt_utc = dt_local.astimezone(pytz.UTC)
-        return dt_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    except ValueError as e:
-        st.warning(f"Неверный формат даты для '{date_str}': {e}")
-        return None
+    tz = pytz.timezone(timezone)
+
+    # Возможные форматы (двухзначный и четырёхзначный год)
+    formats = ["%d/%m/%y", "%d/%m/%Y"]
+
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(date_str.strip(), fmt)
+            if is_end_date:
+                dt = dt.replace(hour=23, minute=59, second=59)
+            dt_local = tz.localize(dt)
+            dt_utc = dt_local.astimezone(pytz.UTC)
+            return dt_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError:
+            continue
+
+    st.warning(f"Неверный формат даты: '{date_str}' (ожидался ДД/ММ/ГГ или ДД/ММ/ГГГГ)")
+    return None
+
 
 def create_schedule(api_key, employee_id, employee_name, calendar_type_id, start_date, end_date):
-    """Создает календарное событие"""
     event_id = str(uuid.uuid4())
     data = {
         "id": event_id,
@@ -267,75 +264,83 @@ def create_schedule(api_key, employee_id, employee_name, calendar_type_id, start
         "confirmed": True,
         "comment": "Запланировано автоматически через Streamlit"
     }
-
     try:
-        response = requests.post(URL_CREATE_SCHEDULE, headers=get_headers(api_key), json=data)
-        if response.status_code in [200, 201]:
+        r = requests.post(URL_CREATE_SCHEDULE, headers=get_headers(api_key), json=data)
+        if r.status_code in [200, 201]:
             return True, f"Событие создано для сотрудника: {employee_name}"
         else:
-            if response.status_code == 400 and "Employee" in response.text and "is fired" in response.text:
+            if r.status_code == 400 and "Employee" in r.text and "is fired" in r.text:
                 return False, f"⚠️ Пропущено: Сотрудник {employee_name} уволен"
-            return False, f"Ошибка создания события для {employee_name}: {response.status_code} — {response.text}"
+            return False, f"Ошибка создания события для {employee_name}: {r.status_code} — {r.text}"
     except Exception as e:
         return False, f"Не удалось создать событие для {employee_name}: {e}"
 
+# =========================
+# Main App
+# =========================
 def main():
     st.write("Введите API-токен, выберите таймзону и выполните действия по созданию или удалению календарных событий.")
 
-    # Ввод API-токена
     api_key = st.text_input("Введите API-токен", type="password")
     if not api_key:
         st.warning("Пожалуйста, введите API-токен.")
         return
 
-    # Выбор таймзоны
     timezone = st.selectbox(
         "Выберите таймзону",
         options=pytz.all_timezones,
         index=pytz.all_timezones.index("Europe/Moscow")
     )
 
-    # Кнопка для очистки кэша
     if st.button("Очистить кэш и обновить данные"):
         st.cache_data.clear()
         st.success("Кэш очищен. Попробуйте загрузить данные снова.")
 
-    # Вкладки для создания и удаления событий
     tab1, tab2 = st.tabs(["Создать события", "Удалить события"])
 
+    # -------------------------
+    # TAB 1: Create events
+    # -------------------------
     with tab1:
         st.subheader("Создание календарных событий")
-        # Загрузка файла
         uploaded_file = st.file_uploader("Выберите CSV-файл", type="csv", key="create_uploader")
 
-        # Кнопка для запуска обработки
         if st.button("Загрузить и создать события"):
             if uploaded_file is None:
                 st.error("Пожалуйста, загрузите CSV-файл.")
             else:
-                # Попытка чтения CSV с разными разделителями
                 try:
-                    # Сначала пробуем разделитель ';'
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, delimiter=';', encoding='utf-8')
-                    # Проверяем, что все обязательные столбцы присутствуют
+                    # ===== Preview via pandas with encoding+delimiter fallback
                     required_columns = ['Фамилия', 'Тип', 'Дата1', 'Дата2']
-                    if not all(col in df.columns for col in required_columns):
-                        # Пробуем разделитель ','
-                        uploaded_file.seek(0)
-                        df = pd.read_csv(uploaded_file, delimiter=',', encoding='utf-8')
-                        if not all(col in df.columns for col in required_columns):
-                            st.error(
-                                "Ошибка: CSV-файл не содержит всех обязательных столбцов: 'Фамилия', 'Тип', 'Дата1', 'Дата2'.")
-                            return
+                    file_bytes = uploaded_file.getvalue()
+
+                    preview_df = None
+                    for enc in ("utf-8-sig", "utf-8"):
+                        for delim in (";", ","):
+                            try:
+                                uploaded_like = BytesIO(file_bytes)
+                                df_try = pd.read_csv(uploaded_like, delimiter=delim, encoding=enc)
+                                df_try.columns = _normalize_fields(df_try.columns.tolist())
+                                if all(col in df_try.columns for col in required_columns):
+                                    preview_df = df_try
+                                    break
+                            except Exception:
+                                pass
+                        if preview_df is not None:
+                            break
+
+                    if preview_df is None:
+                        st.error("Ошибка: CSV-файл не содержит всех обязательных столбцов: 'Фамилия', 'Тип', 'Дата1', 'Дата2'.")
+                        return
+
                     st.write("Предпросмотр загруженного CSV:")
-                    st.dataframe(df)
+                    st.dataframe(preview_df)
+
                 except Exception as e:
-                    st.error(
-                        f"Ошибка чтения CSV-файла. Убедитесь, что файл использует разделитель ';' или ',' и содержит корректные данные. Детали ошибки: {e}")
+                    st.error(f"Ошибка чтения CSV-файла. Убедитесь, что файл использует ';' или ',' и содержит корректные данные. Детали: {e}")
                     return
 
-                # Загрузка типов событий и сотрудников
+                # Load dictionaries
                 calendar_types = load_calendar_types(api_key)
                 if not calendar_types:
                     st.error("Не удалось загрузить типы событий. Проверьте API-токен и подключение.")
@@ -346,48 +351,43 @@ def main():
                     st.error("Не удалось загрузить сотрудников. Проверьте API-токен и подключение.")
                     return
 
-                # Чтение CSV и создание событий
+                # ===== Main pass using DictReader with encoding fallback =====
                 results = []
-                uploaded_file.seek(0)
-                csv_text = StringIO(uploaded_file.getvalue().decode('utf-8'))
-                # Определяем разделитель для DictReader
-                try:
+                csv_str, used_enc = _decode_uploaded_bytes(file_bytes)
+                csv_text = StringIO(csv_str)
+
+                reader = csv.DictReader(csv_text, delimiter=';')
+                fieldnames_norm = _normalize_fields(reader.fieldnames or [])
+                if not all(col in fieldnames_norm for col in required_columns):
                     csv_text.seek(0)
-                    reader = csv.DictReader(csv_text, delimiter=';')
-                    # Проверяем, что обязательные поля присутствуют
-                    if not all(col in reader.fieldnames for col in required_columns):
-                        csv_text.seek(0)
-                        reader = csv.DictReader(csv_text, delimiter=',')
-                        if not all(col in reader.fieldnames for col in required_columns):
-                            st.error(
-                                "Ошибка: CSV-файл не содержит всех обязательных столбцов: 'Фамилия', 'Тип', 'Дата1', 'Дата2'.")
-                            return
-                except Exception as e:
-                    st.error(
-                        f"Ошибка обработки CSV: {e}. Убедитесь, что файл использует разделитель ';' или ',' и содержит корректные данные.")
+                    reader = csv.DictReader(csv_text, delimiter=',')
+                    fieldnames_norm = _normalize_fields(reader.fieldnames or [])
+                if not all(col in fieldnames_norm for col in required_columns):
+                    st.error("Ошибка: CSV-файл не содержит всех обязательных столбцов: 'Фамилия', 'Тип', 'Дата1', 'Дата2'.")
                     return
 
                 for row in reader:
-                    surname = row['Фамилия'].strip()
-                    name = row.get('Имя', '').strip()
-                    middle_name = row.get('Отчество', '').strip()
-                    event_type_name = row['Тип'].strip()
+                    rown = _normalize_row(row)
+
+                    surname        = rown.get('Фамилия', '').strip()
+                    name           = rown.get('Имя', '').strip()
+                    middle_name    = rown.get('Отчество', '').strip()
+                    event_type_name= rown.get('Тип', '').strip()
 
                     if not event_type_name:
                         results.append(f"⚠️ Пропущено: Нет типа события для {surname} {name} {middle_name}".strip())
                         continue
 
-                    start_date = parse_date(row['Дата1'], timezone, is_end_date=False)
-                    end_date = parse_date(row['Дата2'], timezone, is_end_date=True)
+                    start_date = parse_date(rown.get('Дата1', ''), timezone, is_end_date=False)
+                    end_date   = parse_date(rown.get('Дата2', ''), timezone, is_end_date=True)
                     if not start_date or not end_date:
-                        results.append(
-                            f"⚠️ Пропущено: Неверные или отсутствующие даты для {surname} {name} {middle_name}".strip())
+                        results.append(f"⚠️ Пропущено: Неверные или отсутствующие даты для {surname} {name} {middle_name}".strip())
                         continue
 
                     if middle_name:
-                        full_name = f"{surname} {name} {middle_name}"
+                        full_name = f"{surname} {name} {middle_name}".strip()
                     elif name:
-                        full_name = f"{surname} {name}"
+                        full_name = f"{surname} {name}".strip()
                     else:
                         full_name = surname
 
@@ -404,8 +404,7 @@ def main():
                         results.append(f"⚠️ Пропущено: Тип события '{event_type_name}' не найден")
                         continue
 
-                    success, message = create_schedule(api_key, employee_id, employee_name, event_type_id, start_date,
-                                                       end_date)
+                    success, message = create_schedule(api_key, employee_id, employee_name, event_type_id, start_date, end_date)
                     results.append(message)
 
                 st.subheader("Результаты обработки")
@@ -415,56 +414,60 @@ def main():
                     else:
                         st.success(result)
 
+                # 👇 Добавляем финальное инфо-сообщение
+                total = len(preview_df)
+                created = sum(1 for r in results if "Событие создано" in r)
+                skipped = sum(1 for r in results if "⚠️" in r or "Ошибка" in r)
+
+                st.info(f"✅ Обработка завершена: всего строк в файле — {total}, "
+                        f"успешно создано — {created}, "
+                        f"пропущено/с ошибкой — {skipped}.")
+
+    # -------------------------
+    # TAB 2: Delete events
+    # -------------------------
     with tab2:
         st.subheader("Удаление календарных событий")
-        # Загрузка локаций
+
         locations = get_locations(api_key)
         if not locations:
             st.error("Не удалось загрузить локации. Проверьте API-токен и подключение.")
             return
 
-        # Выбор локации
         location_name = st.selectbox("Выберите локацию", options=list(locations.keys()))
         location_id = locations.get(location_name)
 
-        # Выбор диапазона дат
         col1, col2 = st.columns(2)
         with col1:
             start_date = st.date_input("Дата начала", value=datetime(2025, 7, 1), key="start_date")
         with col2:
             end_date = st.date_input("Дата окончания", value=datetime(2025, 12, 31), key="end_date")
 
-        # Кнопка для удаления событий
         if st.button("Удалить события"):
             if not location_id:
                 st.error("Пожалуйста, выберите локацию.")
                 return
 
-            # Преобразование дат в datetime
             tz = pytz.timezone(timezone)
             start_datetime = datetime.combine(start_date, time(0, 0, 0))
-            end_datetime = datetime.combine(end_date, time(23, 59, 59, 999999))
+            end_datetime   = datetime.combine(end_date,   time(23, 59, 59, 999999))
             start_date_utc = tz.localize(start_datetime).astimezone(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            end_date_utc = tz.localize(end_datetime).astimezone(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            end_date_utc   = tz.localize(end_datetime).astimezone(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-            # Получение сотрудников по локации
             employee_ids = get_employees_by_location(api_key, location_id)
             if not employee_ids:
                 st.error("Не удалось получить сотрудников для указанной локации.")
                 return
 
-            # Получение календарных событий
             calendar_events = get_calendar_events(api_key, employee_ids, start_date_utc, end_date_utc)
             event_ids = [event['id'] for event in calendar_events]
 
-            # Удаление событий
             results = []
             st.info(f"Найдено {len(event_ids)} событий для удаления")
             for event_id in event_ids:
                 success, message = delete_calendar_event(api_key, event_id)
                 results.append(message)
 
-            # Вывод результатов
             st.subheader("Результаты удаления")
             for result in results:
                 if "Ошибка" in result or "⚠️" in result:
