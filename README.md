@@ -1,5 +1,12 @@
 # TargControl: Управление календарными событиями
 
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![Streamlit](https://img.shields.io/badge/streamlit-1.46+-FF4B4B)
+![Pandas](https://img.shields.io/badge/pandas-2.3+-150458)
+![Requests](https://img.shields.io/badge/requests-2.32+-black)
+![pytz](https://img.shields.io/badge/pytz-2025.2-0C7BDC)
+![Docker](https://img.shields.io/badge/docker-ready-2496ED)
+
 ---
 
 ## Краткое описание
